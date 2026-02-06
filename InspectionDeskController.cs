@@ -1,9 +1,9 @@
-﻿using UnityEngine;
+using UnityEngine;
 
 /// <summary>
 /// 검수대 조작 컨트롤러 (모드 2)
 /// 
-/// ⭐ 디버깅 버전 - UI 활성화 문제 해결
+/// ⭐ 새로운 Tool UI 시스템 연동
 /// </summary>
 public class InspectionDeskController : MonoBehaviour
 {
@@ -20,7 +20,7 @@ public class InspectionDeskController : MonoBehaviour
 
     [Header("UI 참조")]
     public InspectionDeskInventoryUI inventoryUI;
-    public InspectionToolSelectorUI toolSelectorUI;  // ⭐ 이게 연결되어 있는지 확인!
+    public InspectionToolUI toolUI;  // ⭐ 새로운 Tool UI
 
     [Header("참조")]
     public PlayerInventory playerInventory;
@@ -46,16 +46,7 @@ public class InspectionDeskController : MonoBehaviour
             inventoryUI.SelectSlot(0);
         }
 
-        // ⭐ Tool Selector UI 디버깅
-        if (toolSelectorUI != null)
-        {
-            toolSelectorUI.Initialize();
-            Debug.Log("✓ [검수대] ToolSelectorUI 초기화 완료");
-        }
-        else
-        {
-            Debug.LogError("✗✗✗ [검수대] toolSelectorUI가 NULL입니다! Inspector에서 연결하세요!");
-        }
+        // ⭐ Tool UI는 Awake에서 자동 초기화됨 (별도 호출 불필요)
 
         hasBeenEnabled = true;
 
@@ -75,10 +66,6 @@ public class InspectionDeskController : MonoBehaviour
         if (playerInventory != null)
         {
             deskInventory.UploadToPlayerInventory(playerInventory);
-        }
-        else if (showDebugLog)
-        {
-            Debug.LogWarning("[검수대 조작] playerInventory가 null - 업로드 생략");
         }
 
         if (activeToolIndex >= 0)
@@ -160,7 +147,7 @@ public class InspectionDeskController : MonoBehaviour
             inventoryUI.SelectSlot(index);
 
         if (showDebugLog)
-            Debug.Log($"[검수대 조작] 슬롯 {index + 1} 선택 (index: {index})");
+            Debug.Log($"[검수대 조작] 슬롯 {index + 1} 선택");
     }
 
     void HandleItemPlacement()
@@ -195,7 +182,6 @@ public class InspectionDeskController : MonoBehaviour
         item.SetActive(true);
 
         placedItem = item;
-
         slot.Clear();
         inventoryUI?.UpdateSlot(slotIndex);
 
@@ -249,7 +235,6 @@ public class InspectionDeskController : MonoBehaviour
         placedItem = null;
 
         inventoryUI?.UpdateSlot(slotIndex);
-
         NotifyActiveToolOfItemChange();
 
         if (showDebugLog) Debug.Log($"[검수대 조작] 슬롯 {slotIndex + 1}로 회수");
@@ -269,8 +254,8 @@ public class InspectionDeskController : MonoBehaviour
             {
                 selectedToolIndex = next;
 
-                if (toolSelectorUI != null)
-                    toolSelectorUI.SelectTool(selectedToolIndex);
+                if (toolUI != null)
+                    toolUI.SelectTool(selectedToolIndex);
 
                 if (activeToolIndex >= 0 && activeToolIndex != selectedToolIndex)
                     DeactivateTool(activeToolIndex);
@@ -295,8 +280,8 @@ public class InspectionDeskController : MonoBehaviour
             if (placedTools[i] != null)
             {
                 selectedToolIndex = i;
-                if (toolSelectorUI != null)
-                    toolSelectorUI.SelectTool(i);
+                if (toolUI != null)
+                    toolUI.SelectTool(i);
 
                 if (showDebugLog)
                     Debug.Log($"[검수대 조작] 첫 검수기 {i} 자동 선택");
@@ -339,8 +324,8 @@ public class InspectionDeskController : MonoBehaviour
             }
         }
 
-        if (toolSelectorUI != null)
-            toolSelectorUI.SetToolActive(toolIndex, true);
+        if (toolUI != null)
+            toolUI.SetToolActive(toolIndex, true);
 
         if (showDebugLog)
             Debug.Log($"[검수대 조작] 검수기 {toolIndex} 활성화");
@@ -356,8 +341,8 @@ public class InspectionDeskController : MonoBehaviour
             tool.Deactivate();
         }
 
-        if (toolSelectorUI != null)
-            toolSelectorUI.SetToolActive(toolIndex, false);
+        if (toolUI != null)
+            toolUI.SetToolActive(toolIndex, false);
 
         activeToolIndex = -1;
 
@@ -377,66 +362,29 @@ public class InspectionDeskController : MonoBehaviour
         }
     }
 
-    /// <summary>
-    /// ⭐⭐⭐ 보관대에서 검수기 설치 (UI 활성화 핵심 함수)
-    /// </summary>
     public void PlaceTool(int toolType, GameObject tool)
     {
-        Debug.Log($"========================================");
-        Debug.Log($"[검수대] PlaceTool() 호출됨!");
-        Debug.Log($"[검수대] toolType: {toolType}");
-        Debug.Log($"[검수대] tool: {(tool != null ? tool.name : "NULL")}");
-        Debug.Log($"========================================");
+        if (toolType < 0 || toolType >= 6) return;
+        if (inspectorToolSlots[toolType] == null) return;
 
-        if (toolType < 0 || toolType >= 6)
-        {
-            Debug.LogError($"✗ [검수대] toolType이 범위 밖: {toolType}");
-            return;
-        }
-
-        if (inspectorToolSlots[toolType] == null)
-        {
-            Debug.LogError($"✗ [검수대] inspectorToolSlots[{toolType}]이 NULL!");
-            return;
-        }
-
-        // Transform 설정
         tool.transform.position = inspectorToolSlots[toolType].position;
         tool.transform.rotation = inspectorToolSlots[toolType].rotation;
         tool.transform.SetParent(inspectorToolSlots[toolType]);
         tool.SetActive(true);
 
         placedTools[toolType] = tool;
-        Debug.Log($"✓ [검수대] placedTools[{toolType}] 설정 완료");
 
-        // Tool에 itemPlacementSlot 설정
         SetToolItemPlacementSlot(tool);
 
-        // ⭐⭐⭐ UI 업데이트 (핵심!)
-        Debug.Log($"[검수대] toolSelectorUI 상태 체크:");
-        Debug.Log($"  - toolSelectorUI == null? {toolSelectorUI == null}");
+        // ⭐ 새 Tool UI 시스템 사용
+        if (toolUI != null)
+            toolUI.SetToolInstalled(toolType, true);
 
-        if (toolSelectorUI != null)
-        {
-            Debug.Log($"✓ [검수대] toolSelectorUI.SetToolInstalled({toolType}, true) 호출 시작");
-            toolSelectorUI.SetToolInstalled(toolType, true);
-            Debug.Log($"✓ [검수대] toolSelectorUI.SetToolInstalled({toolType}, true) 호출 완료");
-        }
-        else
-        {
-            Debug.LogError($"✗✗✗ [검수대] toolSelectorUI가 NULL입니다!");
-            Debug.LogError($"✗✗✗ Inspector에서 InspectionDeskController의 Tool Selector UI 필드를 연결하세요!");
-        }
-
-        // 첫 검수기 설치 시 자동 선택
         if (selectedToolIndex < 0)
-        {
             SelectFirstAvailableTool();
-        }
 
-        Debug.Log($"========================================");
-        Debug.Log($"✓✓✓ [검수대] 검수기 {toolType} 설치 완료");
-        Debug.Log($"========================================");
+        if (showDebugLog)
+            Debug.Log($"[검수대 조작] 검수기 {toolType} 설치");
     }
 
     void SetToolItemPlacementSlot(GameObject tool)
@@ -445,8 +393,6 @@ public class InspectionDeskController : MonoBehaviour
         if (saltTool != null)
         {
             saltTool.itemPlacementSlot = itemPlacementSlot;
-            if (showDebugLog)
-                Debug.Log("[검수대 조작] SaltTool에 itemPlacementSlot 설정");
             return;
         }
 
@@ -454,8 +400,13 @@ public class InspectionDeskController : MonoBehaviour
         if (candleTool != null)
         {
             candleTool.itemPlacementSlot = itemPlacementSlot;
-            if (showDebugLog)
-                Debug.Log("[검수대 조작] CandleTool에 itemPlacementSlot 설정");
+            return;
+        }
+
+        UVLightTool uvTool = tool.GetComponent<UVLightTool>();
+        if (uvTool != null)
+        {
+            uvTool.itemPlacementSlot = itemPlacementSlot;
             return;
         }
     }
@@ -472,8 +423,8 @@ public class InspectionDeskController : MonoBehaviour
 
         placedTools[toolType] = null;
 
-        if (toolSelectorUI != null)
-            toolSelectorUI.SetToolInstalled(toolType, false);
+        if (toolUI != null)
+            toolUI.SetToolInstalled(toolType, false);
 
         if (selectedToolIndex == toolType)
         {
