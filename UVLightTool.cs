@@ -1,387 +1,241 @@
-﻿using System;
 using UnityEngine;
 
 /// <summary>
 /// UV Light 검수기 (슬롯 5번)
 /// 
 /// 기능:
-/// - Q 키로 색상 전환 (White → Yellow → Red → Blue → White 순환)
-/// - 일반물품: 비춘 UV 색 그대로 반사
-/// - 귀품: 귀품의 고유 반응색(uvReactionColor)이 반사됨 (UV 색과 다를 수 있음!)
+/// - Q키로 색상 전환 (플레이어 제어)
+/// - 일반물품: 플레이어가 Q키로 자유롭게 색상 전환
+/// - 귀품: G키로 활성화 시 자동으로 색상 순환 (플레이어 제어 불가)
 /// 
-/// 예시:
-///   UV를 Red로 비춤
-///   → 일반물품: 빨강색으로 보임
-///   → 귀품(uvReactionColor = Yellow): 노란색으로 보임!
+/// ⭐ 개선사항:
+/// - 귀품 감지 시 자동 색상 순환
+/// - 플레이어 제어권 차단
 /// </summary>
 public class UVLightTool : MonoBehaviour, IInspectionTool
 {
-    [Header("조명 설정")]
-    public Light uvLight;                  // UV 조명
-    public float lightIntensity = 2f;      // 조명 강도
-    public float lightRange = 5f;          // 조명 범위
+    [Header("UV Light 설정")]
+    public Light uvLight;                   // UV Light 컴포넌트
+    public float colorChangeInterval = 1f;  // 색상 변경 주기 (초)
 
-    [Header("색상 설정")]
-    public Color whiteColor = Color.white;     // ⭐ 하얀색 추가
-    public Color yellowColor = Color.yellow;
-    public Color redColor = Color.red;
-    public Color blueColor = Color.blue;
+    [Header("UV 색상 (3가지)")]
+    public Color colorRed = Color.red;
+    public Color colorGreen = Color.green;
+    public Color colorBlue = Color.blue;
 
     [Header("물품 감지")]
-    public LayerMask itemLayer;            // 물품 레이어
-    public float detectionRange = 3f;      // 감지 범위
+    public Transform itemPlacementSlot;
 
     [Header("디버그")]
     public bool showDebugLog = true;
 
     // 내부 변수
     private bool isActive = false;
-    private UVLightColor currentUVColor = UVLightColor.White;  // ⭐ 기본: 하얀색
+    private int currentColorIndex = 0;  // 0: Red, 1: Green, 2: Blue
     private GameObject currentItem = null;
-    private Material originalMaterial = null;
-    private Material glowMaterial = null;
+    private bool isHauntedItem = false;
 
-    /// <summary>
-    /// UV Light 전용 색상 enum (White 포함)
-    /// </summary>
-    public enum UVLightColor
-    {
-        White,      // 하얀색 (기본)
-        Yellow,     // 노랑
-        Red,        // 빨강
-        Blue        // 파랑
-    }
+    // 자동 순환 타이머
+    private float colorChangeTimer = 0f;
+    private bool isAutoRotating = false;
 
     void Start()
     {
-        if (uvLight == null)
-            uvLight = GetComponentInChildren<Light>();
-
         if (uvLight != null)
         {
             uvLight.enabled = false;
-            uvLight.type = LightType.Point;
-            uvLight.intensity = lightIntensity;
-            uvLight.range = lightRange;
+            uvLight.color = colorRed;
         }
+
+        currentColorIndex = 0;
     }
 
     void Update()
     {
         if (!isActive) return;
 
-        // Q 키로 색상 전환
-        if (Input.GetKeyDown(KeyCode.Q))
+        // ⭐ 귀품 + 자동 순환 모드
+        if (isAutoRotating && isHauntedItem)
         {
-            CycleColor();
-        }
+            colorChangeTimer += Time.deltaTime;
 
-        // 물품 감지 및 반사
-        DetectAndIlluminateItem();
+            if (colorChangeTimer >= colorChangeInterval)
+            {
+                colorChangeTimer = 0f;
+                CycleColorAutomatically();
+            }
+        }
+        // ⭐ 일반 물품 또는 귀품이 아닌 경우: 플레이어 제어
+        else if (!isHauntedItem)
+        {
+            if (Input.GetKeyDown(KeyCode.Q))
+            {
+                CycleColorManually();
+            }
+        }
+        // ⭐ 귀품인데 자동 순환 꺼져있으면 무시 (플레이어 제어 차단)
     }
 
     public void Activate()
     {
         isActive = true;
 
-        // ⭐ 활성화 시 하얀색으로 시작
-        currentUVColor = UVLightColor.White;
-
         if (uvLight != null)
         {
             uvLight.enabled = true;
-            SetUVLightColor(currentUVColor);
+            ApplyCurrentColor();
         }
 
+        // 현재 아이템 체크
+        CheckCurrentItem();
+
         if (showDebugLog)
-            Debug.Log($"[UV Light] 활성화 - 색상: {GetColorName(currentUVColor)}");
+            Debug.Log("[UVLight] 활성화");
     }
 
     public void Deactivate()
     {
         isActive = false;
+        isAutoRotating = false;
+        colorChangeTimer = 0f;
 
         if (uvLight != null)
             uvLight.enabled = false;
 
-        // 물품 발광 효과 제거
-        RemoveGlowFromItem();
-
         if (showDebugLog)
-            Debug.Log("[UV Light] 비활성화");
+            Debug.Log("[UVLight] 비활성화");
     }
 
     public void CheckItem(GameObject item)
     {
-        // Update에서 자동으로 처리
+        currentItem = item;
+        CheckCurrentItem();
     }
 
     /// <summary>
-    /// ⭐ Q키로 색상 순환 (White → Yellow → Red → Blue → White)
+    /// ⭐ 현재 아이템 체크 및 자동 순환 설정
     /// </summary>
-    void CycleColor()
+    void CheckCurrentItem()
     {
-        switch (currentUVColor)
+        if (!isActive) return;
+
+        // 아이템이 없으면 자동 순환 중지
+        if (currentItem == null)
         {
-            case UVLightColor.White:
-                currentUVColor = UVLightColor.Yellow;
-                break;
-            case UVLightColor.Yellow:
-                currentUVColor = UVLightColor.Red;
-                break;
-            case UVLightColor.Red:
-                currentUVColor = UVLightColor.Blue;
-                break;
-            case UVLightColor.Blue:
-                currentUVColor = UVLightColor.White;
-                break;
-            default:
-                currentUVColor = UVLightColor.White;
-                break;
+            isHauntedItem = false;
+            isAutoRotating = false;
+            colorChangeTimer = 0f;
+
+            if (showDebugLog)
+                Debug.Log("[UVLight] 아이템 없음 - 플레이어 제어 가능");
+            return;
         }
 
-        SetUVLightColor(currentUVColor);
-
-        // 현재 물품이 있으면 다시 체크 (색상이 바뀌었으므로)
-        if (currentItem != null)
+        // 아이템 스크립트 가져오기
+        Item itemScript = currentItem.GetComponent<Item>();
+        if (itemScript == null)
         {
-            RemoveGlowFromItem();
-            ApplyGlowToItem(currentItem);
+            isHauntedItem = false;
+            isAutoRotating = false;
+            return;
         }
 
-        if (showDebugLog)
-            Debug.Log($"[UV Light] 색상 전환: {GetColorName(currentUVColor)}");
-    }
+        // ⭐ 귀품인지 확인
+        isHauntedItem = itemScript.IsHaunted();
 
-    /// <summary>
-    /// UV 조명 색상 설정
-    /// </summary>
-    void SetUVLightColor(UVLightColor uvColor)
-    {
-        if (uvLight == null) return;
-
-        switch (uvColor)
+        if (isHauntedItem)
         {
-            case UVLightColor.White:
-                uvLight.color = whiteColor;
-                break;
-            case UVLightColor.Yellow:
-                uvLight.color = yellowColor;
-                break;
-            case UVLightColor.Red:
-                uvLight.color = redColor;
-                break;
-            case UVLightColor.Blue:
-                uvLight.color = blueColor;
-                break;
-        }
-    }
+            // 귀품이면 자동 순환 시작
+            isAutoRotating = true;
+            colorChangeTimer = 0f;
 
-    /// <summary>
-    /// 물품 감지 및 발광 효과
-    /// </summary>
-    void DetectAndIlluminateItem()
-    {
-        // Raycast로 물품 감지
-        RaycastHit hit;
-        if (Physics.Raycast(transform.position, transform.forward, out hit, detectionRange, itemLayer))
-        {
-            GameObject detectedItem = hit.collider.gameObject;
-
-            // 새로운 물품 감지
-            if (detectedItem != currentItem)
-            {
-                RemoveGlowFromItem();
-                ApplyGlowToItem(detectedItem);
-            }
+            if (showDebugLog)
+                Debug.Log($"[UVLight] ★ 귀품 감지! 자동 색상 순환 시작 (주기: {colorChangeInterval}초)");
         }
         else
         {
-            // 물품이 범위 밖으로 나감
-            RemoveGlowFromItem();
+            // 일반 물품이면 플레이어 제어
+            isAutoRotating = false;
+            colorChangeTimer = 0f;
+
+            if (showDebugLog)
+                Debug.Log("[UVLight] 일반 물품 - 플레이어 제어 가능 (Q키)");
         }
     }
 
     /// <summary>
-    /// 물품에 발광 효과 적용
+    /// ⭐ 자동 색상 순환 (귀품)
     /// </summary>
-    void ApplyGlowToItem(GameObject item)
+    void CycleColorAutomatically()
     {
-        if (item == null) return;
+        currentColorIndex++;
+        if (currentColorIndex > 2)
+            currentColorIndex = 0;
 
-        Item itemScript = item.GetComponent<Item>();
-        if (itemScript == null) return;
-
-        Renderer renderer = item.GetComponent<Renderer>();
-        if (renderer == null) return;
-
-        currentItem = item;
-
-        // 원본 머티리얼 저장
-        originalMaterial = renderer.material;
-
-        // 새 머티리얼 생성 (발광)
-        glowMaterial = new Material(originalMaterial);
-        glowMaterial.EnableKeyword("_EMISSION");
-
-        // 반사 색상 결정
-        Color responseColor = GetResponseColor(itemScript.hauntedData);
-
-        // Emission 설정
-        glowMaterial.SetColor("_EmissionColor", responseColor * 2f);
-        renderer.material = glowMaterial;
+        ApplyCurrentColor();
 
         if (showDebugLog)
         {
-            string itemType = itemScript.hauntedData.isHaunted ? "귀품" : "일반";
-            string uvColorName = GetColorName(currentUVColor);
-
-            // ⭐ UVColor를 UVLightColor로 변환하여 표시
-            string responseColorName = GetResponseColorName(itemScript.hauntedData);
-
-            Debug.Log($"[UV Light] {itemType} 감지 - UV 색: {uvColorName}, 반사색: {responseColorName}");
+            string colorName = GetCurrentColorName();
+            Debug.Log($"[UVLight] 자동 순환 → {colorName}");
         }
     }
 
     /// <summary>
-    /// 물품 발광 효과 제거
+    /// ⭐ 수동 색상 전환 (일반 물품, Q키)
     /// </summary>
-    void RemoveGlowFromItem()
+    void CycleColorManually()
     {
-        if (currentItem != null && originalMaterial != null)
+        currentColorIndex++;
+        if (currentColorIndex > 2)
+            currentColorIndex = 0;
+
+        ApplyCurrentColor();
+
+        if (showDebugLog)
         {
-            Renderer renderer = currentItem.GetComponent<Renderer>();
-            if (renderer != null)
-            {
-                renderer.material = originalMaterial;
-            }
-
-            if (glowMaterial != null)
-                Destroy(glowMaterial);
-
-            currentItem = null;
-            originalMaterial = null;
-            glowMaterial = null;
+            string colorName = GetCurrentColorName();
+            Debug.Log($"[UVLight] 수동 전환 (Q키) → {colorName}");
         }
     }
 
     /// <summary>
-    /// 물품의 반사 색상 결정
-    /// 일반물품: UV 색 그대로
-    /// 귀품: uvReactionColor (None이면 반응 없음 = UV 색 그대로)
+    /// 현재 색상 적용
     /// </summary>
-    Color GetResponseColor(HauntedItemData hauntedData)
+    void ApplyCurrentColor()
     {
-        // 일반물품이면 UV 색 그대로
-        if (!hauntedData.isHaunted)
-        {
-            return UVLightColorToColor(currentUVColor);
-        }
+        if (uvLight == null) return;
 
-        // 귀품이지만 UV 반응색이 None이면 UV 색 그대로
-        if (hauntedData.uvReactionColor == UVColor.None)
+        switch (currentColorIndex)
         {
-            return UVLightColorToColor(currentUVColor);
-        }
-
-        // 귀품의 고유 반응색 반환 (UVColor → Color 변환)
-        return UVColorToColor(hauntedData.uvReactionColor);
-    }
-
-    /// <summary>
-    /// UVLightColor enum을 Unity Color로 변환
-    /// </summary>
-    Color UVLightColorToColor(UVLightColor uvColor)
-    {
-        switch (uvColor)
-        {
-            case UVLightColor.White:
-                return whiteColor;
-            case UVLightColor.Yellow:
-                return yellowColor;
-            case UVLightColor.Red:
-                return redColor;
-            case UVLightColor.Blue:
-                return blueColor;
-            default:
-                return Color.white;
+            case 0:
+                uvLight.color = colorRed;
+                break;
+            case 1:
+                uvLight.color = colorGreen;
+                break;
+            case 2:
+                uvLight.color = colorBlue;
+                break;
         }
     }
 
     /// <summary>
-    /// HauntedItemData의 UVColor enum을 Unity Color로 변환
+    /// 현재 색상 이름 반환
     /// </summary>
-    Color UVColorToColor(UVColor uvColor)
+    string GetCurrentColorName()
     {
-        switch (uvColor)
+        switch (currentColorIndex)
         {
-            case UVColor.Yellow:
-                return yellowColor;
-            case UVColor.Red:
-                return redColor;
-            case UVColor.Blue:
-                return blueColor;
-            default:
-                return Color.white;
-        }
-    }
-
-    /// <summary>
-    /// UVLightColor를 한글 이름으로 변환
-    /// </summary>
-    string GetColorName(UVLightColor uvColor)
-    {
-        switch (uvColor)
-        {
-            case UVLightColor.White:
-                return "하얀색";
-            case UVLightColor.Yellow:
-                return "노랑";
-            case UVLightColor.Red:
-                return "빨강";
-            case UVLightColor.Blue:
-                return "파랑";
-            default:
-                return "알 수 없음";
-        }
-    }
-
-    /// <summary>
-    /// 귀품의 반응색 이름 가져오기
-    /// </summary>
-    string GetResponseColorName(HauntedItemData hauntedData)
-    {
-        if (!hauntedData.isHaunted)
-        {
-            return GetColorName(currentUVColor);
-        }
-
-        if (hauntedData.uvReactionColor == UVColor.None)
-        {
-            return GetColorName(currentUVColor);
-        }
-
-        // UVColor를 한글로 변환
-        switch (hauntedData.uvReactionColor)
-        {
-            case UVColor.Yellow:
-                return "노랑";
-            case UVColor.Red:
-                return "빨강";
-            case UVColor.Blue:
-                return "파랑";
-            default:
-                return "알 수 없음";
+            case 0: return "Red";
+            case 1: return "Green";
+            case 2: return "Blue";
+            default: return "Unknown";
         }
     }
 
     void OnDisable()
     {
         Deactivate();
-    }
-
-    internal void CycleColor(int direction)
-    {
-        throw new NotImplementedException();
     }
 }
